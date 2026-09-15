@@ -4,7 +4,8 @@
 
 ```mermaid
 flowchart LR
-    CAM[v4l2src] --> CONVERT[Camera caps and tee]
+    CAM[v4l2src] --> STAMP[Assign source frame ID and capture PTS]
+    STAMP --> CONVERT[Camera caps and tee]
     CONVERT --> NQ[queue]
     NQ --> NCONV[videoconvert BGR]
     NCONV --> NANO[rknnnanotrack]
@@ -25,8 +26,11 @@ flowchart LR
     CONVERT --> VQ[leaky queue]
     VQ --> VRATE[videorate stream FPS]
     VRATE --> VSCALE[videoscale stream size]
-    VSCALE --> ENC[mpph264enc]
-    ENC --> RTP[rtph264pay and udpsink]
+    VSCALE --> OVERLAY[cairooverlay optional fused bbox and frame ID]
+    OVERLAY --> ENC[mpph264enc]
+    ENC --> RTP[rtph264pay]
+    RTP --> FRAMEID[Missing optional RTP frame ID extension]
+    FRAMEID --> UDP[udpsink]
 ```
 
 ## Pipeline branches
@@ -36,6 +40,7 @@ The application builds equivalent GStreamer syntax below. Values in `${...}` are
 ```text
 v4l2src device=${CAMERA_DEVICE}
   ! video/x-raw,format=NV12,width=${CAMERA_WIDTH},height=${CAMERA_HEIGHT},framerate=30/1
+  ! identity name=source_frames
   ! tee name=camera
 
 camera.
@@ -55,13 +60,56 @@ camera.
   ! queue max-size-buffers=2 leaky=downstream
   ! videorate drop-only=true
   ! videoscale ! videoconvert
-  ! video/x-raw,format=I420,width=${STREAM_WIDTH},height=${STREAM_HEIGHT},framerate=${STREAM_FPS}/1
+  ! video/x-raw,format=BGRx,width=${STREAM_WIDTH},height=${STREAM_HEIGHT},framerate=${STREAM_FPS}/1
+  ! cairooverlay name=debug_overlay
+  ! videoconvert ! video/x-raw,format=I420
   ! mpph264enc bps=${STREAM_BITRATE_BPS} gop=${STREAM_FPS} header-mode=each-idr
   ! h264parse ! rtph264pay pt=96 config-interval=1
   ! udpsink host=${GROUND_STATION_HOST} port=${VIDEO_PORT} sync=false async=false
 ```
 
-The input PTS reaches each branch with its source buffer. `tracker_pipeline` must extract `GstVideoRegionOfInterestMeta` and `GST_BUFFER_PTS` in each appsink callback, then enqueue a normalized measurement for `bbox_estimator_core`. Appsink callback arrival time is logged but never used as the measurement timestamp.
+`identity name=source_frames` is a probe point, not an ID generator. `tracker_pipeline` assigns a monotonically increasing `source_frame_id` and records it with the buffer's `GST_BUFFER_PTS` there, before the `tee`. The application keeps the short `PTS <-> source_frame_id` map for all branches. Each 50 Hz estimator output has its own output tick time; it must not be used as the video frame ID.
+
+The input PTS reaches each branch with its source buffer. `tracker_pipeline` extracts `GstVideoRegionOfInterestMeta` and `GST_BUFFER_PTS` in each appsink callback, looks up `source_frame_id`, then enqueues a normalized measurement for `bbox_estimator_core`. Appsink callback arrival time is logged but never used as the measurement timestamp.
+
+## Video overlay and client synchronization
+
+Two modes are supported; enable both for field debugging.
+
+### Server-side debug overlay
+
+Use the existing GStreamer `cairooverlay` element in the stream branch. Its draw callback, implemented by `tracker_pipeline`, looks up the current video buffer's `source_frame_id` and PTS, predicts/selects the fused estimate for that PTS, and draws:
+
+- fused bbox and tracking status;
+- `source_frame_id` and source PTS; and
+- optional Nano and YOLO boxes in separate colours.
+
+This is the simplest debug view: the box is already burned into the image, so the ground station does not have to synchronize a second data stream.
+
+### Metadata-only client overlay
+
+For a client-rendered overlay, send one side-channel record per encoded video frame:
+
+```text
+VideoOverlayRecord
+  source_frame_id
+  capture_pts_ns
+  estimated_bbox_xywh_px
+  status
+  estimator_output_time_ns
+```
+
+The record is generated in the video branch from the estimator state selected/predicted to that video's PTS; it is not simply the latest 50 Hz output. The client matches on `source_frame_id` first and uses PTS only for diagnostics/fallback.
+
+An encoded H.264/RTP video packet does not preserve arbitrary GStreamer metadata. Therefore, a client cannot receive `source_frame_id` merely because it existed on the raw camera buffer. Choose one of these transport options:
+
+| Option | Status | Use |
+| --- | --- | --- |
+| Burn `source_frame_id` into the `cairooverlay` image | Available now | Human debug, no programmatic matching |
+| Carry `source_frame_id` in an RTP header extension | **Missing** `rtpframeidpay` / client depay support | Robust client-side metadata matching |
+| Use video PTS plus jitter-buffer mapping | Available but weaker | Debug only; do not use as the sole control/data association key |
+
+The estimator's regular 50 Hz fused-bbox publisher remains separate from these per-video-frame overlay records.
 
 ## Missing implementation status
 
@@ -73,6 +121,7 @@ The input PTS reaches each branch with its source buffer. `tracker_pipeline` mus
 | `tracker_pipeline` | **Missing** | Application that owns pipeline lifecycle, appsink callbacks, PTS normalization, Nano ROI writes, and bbox transport |
 | `bbox_estimator_core` | **Missing** | Pure deterministic 50 Hz startup/prediction/history-correction/re-track engine |
 | Fused bbox publisher | **Missing** | Small transport adapter selected after the consumer protocol is chosen; it receives only `EstimatedBBox` from the core |
+| RTP frame-ID extension | **Missing, optional** | `rtpframeidpay` and matching client support; carries `source_frame_id` with encoded video for metadata-only overlay |
 
 Do not implement `bbox_estimator_core` as a GStreamer transform: transforms are driven by arriving video buffers at 30 Hz, whereas this component must publish independently at 50 Hz and combine delayed metadata from two branches.
 
