@@ -2,6 +2,8 @@
 
 This plan implements [DESIGN.md](DESIGN.md) in the smallest useful order. The first target is a 50 Hz estimator with recorded/synthetic measurements; camera, RKNN models, re-tracking, and ground-station video follow without changing estimator ownership.
 
+The implemented replay workflow is documented in [SIMULATION_DESIGN.md](SIMULATION_DESIGN.md).
+
 ## Scope and non-goals
 
 - Reuse `gst_rknn` ROI metadata: `nanotrack` and `yolo8` `GstVideoRegionOfInterestMeta`.

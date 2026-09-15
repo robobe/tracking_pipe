@@ -1,0 +1,7 @@
+{"type":"measurement","arrival_ns":0,"capture_pts_ns":0,"source":"nanotrack","bbox_xywh_px":[10,20,20,10],"confidence":0.8}
+{"type":"measurement","arrival_ns":33000000,"capture_pts_ns":33000000,"source":"nanotrack","bbox_xywh_px":[13,20,20,10],"confidence":0.8}
+{"type":"measurement","arrival_ns":60000000,"capture_pts_ns":0,"source":"yolo8","bbox_xywh_px":[12,20,20,10],"confidence":0.9,"class_id":0}
+{"type":"tick","time_ns":0}
+{"type":"tick","time_ns":20000000}
+{"type":"tick","time_ns":40000000}
+{"type":"tick","time_ns":60000000}

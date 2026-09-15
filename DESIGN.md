@@ -1,5 +1,7 @@
 # Radxa Multi-Tracker Pipeline — Design Baseline
 
+See [SIMULATION_DESIGN.md](SIMULATION_DESIGN.md) for the deterministic estimator development loop.
+
 ## 1. Goal
 
 Run several object trackers on a Radxa device from one camera feed and publish a single, time-stamped bounding-box estimate at **50 Hz**.
